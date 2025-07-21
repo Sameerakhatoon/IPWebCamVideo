@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
+import android.graphics.YuvImage;
 import android.hardware.camera2.*;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
@@ -24,6 +25,7 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import fi.iki.elonen.NanoHTTPD;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
@@ -183,21 +185,26 @@ public class MainActivity extends AppCompatActivity {
             captureRequestBuilder.addTarget(surface);
             Log.d(TAG, "startPreview: Target surface added to CaptureRequest");
 
-            imageReader = ImageReader.newInstance(previewSize.getWidth(), previewSize.getHeight(), ImageFormat.JPEG, 2);
+            imageReader = ImageReader.newInstance(previewSize.getWidth(), previewSize.getHeight(), ImageFormat.YUV_420_888, 2);
             Log.d(TAG, "startPreview: ImageReader created with size " + previewSize);
 
             imageReader.setOnImageAvailableListener(reader -> {
                 Image image = reader.acquireLatestImage();
                 if (image != null) {
-                    Log.d(TAG, "onImageAvailable: Image captured");
-                    ByteBuffer buffer = image.getPlanes()[0].getBuffer();
-                    byte[] bytes = new byte[buffer.remaining()];
-                    buffer.get(bytes);
-                    synchronized (this) {
-                        currentFrame = bytes;
+                    try {
+                        byte[] nv21 = yuv420ToNV21(image);
+                        YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, image.getWidth(), image.getHeight(), null);
+                        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+                        yuvImage.compressToJpeg(new android.graphics.Rect(0, 0, image.getWidth(), image.getHeight()), 80, outputStream);
+                        byte[] jpegBytes = outputStream.toByteArray();
+                        synchronized (this) {
+                            currentFrame = jpegBytes;
+                        }
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error processing image", e);
+                    } finally {
+                        image.close();
                     }
-                    image.close();
-                    Log.d(TAG, "onImageAvailable: Image processed and closed");
                 }
             }, null);
 
@@ -300,9 +307,10 @@ public class MainActivity extends AppCompatActivity {
                             outputStream.flush();
                             Log.d(TAG, "streamVideo: Frame written to output stream");
                         }
-                        Thread.sleep(33);  // Control frame rate
+                        Thread.sleep(16);  // Control frame rate
                     }
                 } catch (IOException | InterruptedException e) {
+
                     e.printStackTrace();
                     Log.e(TAG, "streamVideo: Exception in video streaming thread", e);
                 } finally {
@@ -385,5 +393,43 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
-}
+    private byte[] yuv420ToNV21(Image image) {
+        int width = image.getWidth();
+        int height = image.getHeight();
 
+        ByteBuffer yBuffer = image.getPlanes()[0].getBuffer();
+        ByteBuffer uBuffer = image.getPlanes()[1].getBuffer();
+        ByteBuffer vBuffer = image.getPlanes()[2].getBuffer();
+
+        int yRowStride = image.getPlanes()[0].getRowStride();
+        int uvRowStride = image.getPlanes()[1].getRowStride();
+        int uvPixelStride = image.getPlanes()[1].getPixelStride();
+
+        byte[] nv21 = new byte[width * height * 3 / 2];
+
+        // Copy Y plane
+        int pos = 0;
+        for (int row = 0; row < height; row++) {
+            int yRowStart = row * yRowStride;
+            yBuffer.position(yRowStart);
+            yBuffer.get(nv21, pos, width);
+            pos += width;
+        }
+
+        // Interleave VU (not UV) for NV21
+        int chromaHeight = height / 2;
+        int chromaWidth = width / 2;
+        for (int row = 0; row < chromaHeight; row++) {
+            int uvRowStart = row * uvRowStride;
+            for (int col = 0; col < chromaWidth; col++) {
+                int index = uvRowStart + col * uvPixelStride;
+                vBuffer.position(index);
+                uBuffer.position(index);
+                nv21[pos++] = vBuffer.get(); // V
+                nv21[pos++] = uBuffer.get(); // U
+            }
+        }
+
+        return nv21;
+    }
+}
