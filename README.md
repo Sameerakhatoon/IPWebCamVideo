@@ -2,7 +2,7 @@
 
 A simple Android app that turns your device into an IP webcam. Stream live video from your device's camera over HTTP and view it on any web browser.
 
-![Project Demo](IPWebCamVideo.gif)
+![Project Demo](WebCamDemo.gif)
 
 **Note:** This project was initially developed in a hurry, and there are plans to include audio streaming & saving files in future updates.
 
